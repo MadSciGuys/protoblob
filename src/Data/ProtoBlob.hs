@@ -23,9 +23,11 @@ module Data.ProtoBlob (
     PutBlob
   , lenMessagePutM
   , lenMessageUnsafePutM
+  , runPutBlob
     -- * Deserialization
   , GetBlob
   , lenMessageGetM
+  , runGetBlob
   )where
 
 import Control.Monad (ap)
@@ -41,6 +43,7 @@ import Text.ProtocolBuffers ( ReflectDescriptor
                             , messageSize
                             , messagePutM
                             , messageGetM
+                            , runGetOnLazy
                             )
 
 import Text.ProtocolBuffers.Get ( Get
@@ -52,7 +55,10 @@ import Text.ProtocolBuffers.Get ( Get
 
 import Data.Binary.Put ( Put
                        , putWord32le
+                       , runPut
                        )
+
+import Data.ByteString.Lazy (ByteString)
 
 -- | 'Text.ProtocolBuffers' uses the 'Put' monad from 'Data.Binary', so this is
 --   just a type synonym.
@@ -78,6 +84,9 @@ lenMessagePutM p = if messageSize p >= 4294967295
 lenMessageUnsafePutM :: (ReflectDescriptor msg, Wire msg) => msg -> PutBlob
 lenMessageUnsafePutM = ap ((>>) . putWord32le . fromIntegral . messageSize) messagePutM
 
+runPutBlob :: PutBlob -> ByteString
+runPutBlob = runPut
+
 -- | 'Text.ProtocolBuffers' uses its own 'Get' monad implementation, defined in
 --   'Text.ProtocolBuffers.Get'. This is a type synonym for convenience.
 type GetBlob = Get
@@ -92,3 +101,7 @@ lenMessageGetM = getWord32le           >>=
     where checkResult (Finished _ _ x) = return x
           checkResult (Failed _ e)     = fail e
           checkResult _                = fail "sub runGetAll returned 'Partial'"
+
+runGetBlob :: GetBlob a -> ByteString -> Either String a
+runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
+                                          (Right (x, _)) -> Right x
