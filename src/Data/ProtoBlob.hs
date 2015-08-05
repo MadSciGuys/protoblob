@@ -1,5 +1,5 @@
 {-|
-Module      : ProtoBlob
+Module      : Data.ProtoBlob
 Description : Storable Message Frames for Protocol Buffers
 Copyright   : Travis Whitaker 2015
 License     : MIT
@@ -28,7 +28,7 @@ module Data.ProtoBlob (
   , GetBlob
   , lenMessageGetM
   , runGetBlob
-  )where
+  ) where
 
 import Control.Monad (ap)
 
