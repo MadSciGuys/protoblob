@@ -58,7 +58,7 @@ import Data.Binary.Put ( Put
                        , runPut
                        )
 
-import Data.ByteString.Lazy (ByteString)
+import qualified Data.ByteString.Lazy as BL (ByteString, null)
 
 -- | 'Text.ProtocolBuffers' uses the 'Put' monad from 'Data.Binary', so this is
 --   just a type synonym.
@@ -84,7 +84,7 @@ lenMessagePutM p = if messageSize p >= 4294967295
 lenMessageUnsafePutM :: (ReflectDescriptor msg, Wire msg) => msg -> PutBlob
 lenMessageUnsafePutM = ap ((>>) . putWord32le . fromIntegral . messageSize) messagePutM
 
-runPutBlob :: PutBlob -> ByteString
+runPutBlob :: PutBlob -> BL.ByteString
 runPutBlob = runPut
 
 -- | 'Text.ProtocolBuffers' uses its own 'Get' monad implementation, defined in
@@ -102,6 +102,23 @@ lenMessageGetM = getWord32le           >>=
           checkResult (Failed _ e)     = fail e
           checkResult _                = fail "sub runGetAll returned 'Partial'"
 
-runGetBlob :: GetBlob a -> ByteString -> Either String a
+runGetBlob :: GetBlob a -> BL.ByteString -> Either String a
 runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
                                           (Right (x, _)) -> Right x
+
+data ProtoBlob msg a = ProtoBlob (msg -> a) BL.ByteString
+
+type ProtoBlob1 msg = ProtoBlob msg msg
+
+protoBlob :: BL.ByteString -> ProtoBlob1 msg
+protoBlob = ProtoBlob id
+
+instance Functor (ProtoBlob msg) where
+  fmap f1 (ProtoBlob f0 bStr) = ProtoBlob (f1 . f0) bStr
+
+instance (ReflectDescriptor msg, Wire msg) => Foldable (ProtoBlob msg) where
+  foldr toAcc base (ProtoBlob toa bStr) = if BL.null bStr
+    then base
+    else either error (\ (msg, remainder)
+        -> toAcc (toa msg) $ foldr toAcc base (ProtoBlob toa remainder)
+      ) $ runGetOnLazy lenMessageGetM bStr
