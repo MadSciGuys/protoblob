@@ -27,7 +27,12 @@ module Data.ProtoBlob (
     -- * Deserialization
   , GetBlob
   , lenMessageGetM
+  , lenMessageGetMLen
   , runGetBlob
+  , ProtoBlob
+  , protoBlob
+  , messages
+  , lengthLength
   ) where
 
 import Control.Monad (ap)
@@ -58,7 +63,15 @@ import Data.Binary.Put ( Put
                        , runPut
                        )
 
+import Data.Int (Int64)
+
+import Data.Foldable (toList)
+
 import qualified Data.ByteString.Lazy as BL (ByteString, null)
+
+--in bytes (the length is encoded as a 32 bit number)
+lengthLength :: (Num n) => n
+lengthLength = 4
 
 -- | 'Text.ProtocolBuffers' uses the 'Put' monad from 'Data.Binary', so this is
 --   just a type synonym.
@@ -91,27 +104,31 @@ runPutBlob = runPut
 --   'Text.ProtocolBuffers.Get'. This is a type synonym for convenience.
 type GetBlob = Get
 
+--Damn, I made this ugly. -Ian
+lenMessageGetMLen :: (ReflectDescriptor msg, Wire msg) => GetBlob (Int64, msg)
+lenMessageGetMLen = fromIntegral <$> getWord32le >>= \ len ->
+    getLazyByteString len >>= \ str -> case runGetAll messageGetM str of
+        (Finished _ _ msg) -> return (len, msg)
+        (Failed _ e) -> fail e
+        _ -> fail "sub runGetAll returned 'Partial'"
+
 -- | Create a 'GetBlob' that deserializes a single message of type 'msg'. This
 --   works by nesting the 'Get' monad. Failures in the inner monad are
 --   propagated to the outer level with 'fail'.
 lenMessageGetM :: (ReflectDescriptor msg, Wire msg) => GetBlob msg
-lenMessageGetM = getWord32le           >>=
-    (getLazyByteString . fromIntegral) >>=
-    (checkResult . runGetAll messageGetM)
-    where checkResult (Finished _ _ x) = return x
-          checkResult (Failed _ e)     = fail e
-          checkResult _                = fail "sub runGetAll returned 'Partial'"
+lenMessageGetM = snd <$> lenMessageGetMLen
 
 runGetBlob :: GetBlob a -> BL.ByteString -> Either String a
 runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
                                           (Right (x, _)) -> Right x
 
-data ProtoBlob msg a = ProtoBlob (msg -> a) BL.ByteString
+data ProtoBlob msg a = ProtoBlob ((Int64, msg) -> a) BL.ByteString
 
-type ProtoBlob1 msg = ProtoBlob msg msg
-
-protoBlob :: BL.ByteString -> ProtoBlob1 msg
+protoBlob :: BL.ByteString -> ProtoBlob msg (Int64, msg)
 protoBlob = ProtoBlob id
+
+messages :: BL.ByteString -> ProtoBlob msg msg
+messages = ProtoBlob snd
 
 instance Functor (ProtoBlob msg) where
   fmap f1 (ProtoBlob f0 bStr) = ProtoBlob (f1 . f0) bStr
@@ -119,6 +136,6 @@ instance Functor (ProtoBlob msg) where
 instance (ReflectDescriptor msg, Wire msg) => Foldable (ProtoBlob msg) where
   foldr toAcc base (ProtoBlob toa bStr) = if BL.null bStr
     then base
-    else either error (\ (msg, remainder)
-        -> toAcc (toa msg) $ foldr toAcc base (ProtoBlob toa remainder)
-      ) $ runGetOnLazy lenMessageGetM bStr
+    else either error (\ (parseResult, remainder)
+        -> toAcc (toa parseResult) $ foldr toAcc base (ProtoBlob toa remainder)
+      ) $ runGetOnLazy lenMessageGetMLen bStr
