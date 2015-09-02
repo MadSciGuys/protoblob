@@ -122,17 +122,30 @@ runGetBlob :: GetBlob a -> BL.ByteString -> Either String a
 runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
                                           (Right (x, _)) -> Right x
 
+-- | A wrapper for any lazy bytestring expected to be a protoblob.
+--   The first type argument is there because that's the only way to put 
+--   a type constraint on the Foldable instance of ProtoBlob.
+--   Look at protoBlob and messages for examples of how the hell to use 
+--   ProtoBlob.
 data ProtoBlob msg a = ProtoBlob ((Int64, msg) -> a) BL.ByteString
 
+-- | toList . protoBlob will effectively give you a lazy list of the entire
+--   parsed contents of the input bytestring.
 protoBlob :: BL.ByteString -> ProtoBlob msg (Int64, msg)
 protoBlob = ProtoBlob id
 
+-- | This is for when you don't care about length information.
 messages :: BL.ByteString -> ProtoBlob msg msg
 messages = ProtoBlob snd
 
+-- | Having that (entirely silly) first argument to ProtoBlob data constructor
+--   has the one benefit of making it trivially easy to write a lazy Functor
+--   instance.
 instance Functor (ProtoBlob msg) where
   fmap f1 (ProtoBlob f0 bStr) = ProtoBlob (f1 . f0) bStr
 
+-- | Note that this crashes if parsing fails.  The purpose of the entire
+--   ProtoBlob wrapper type was for fast and dirty parsing, though.
 instance (ReflectDescriptor msg, Wire msg) => Foldable (ProtoBlob msg) where
   foldr toAcc base (ProtoBlob toa bStr) = if BL.null bStr
     then base
