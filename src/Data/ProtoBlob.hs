@@ -27,11 +27,9 @@ module Data.ProtoBlob (
     -- * Deserialization
   , GetBlob
   , lenMessageGetM
-  , lenMessageGetMLen
   , runGetBlob
   , ProtoBlob
   , protoBlob
-  , messages
   , lengthLength
   ) where
 
@@ -69,7 +67,8 @@ import Data.Foldable (toList)
 
 import qualified Data.ByteString.Lazy as BL (ByteString, null)
 
---in bytes (the length is encoded as a 32 bit number)
+--Payload length field length in bytes (the length is encoded as a 32 bit
+--number).
 lengthLength :: (Num n) => n
 lengthLength = 4
 
@@ -104,19 +103,16 @@ runPutBlob = runPut
 --   'Text.ProtocolBuffers.Get'. This is a type synonym for convenience.
 type GetBlob = Get
 
---Damn, I made this ugly. -Ian
-lenMessageGetMLen :: (ReflectDescriptor msg, Wire msg) => GetBlob (Int64, msg)
-lenMessageGetMLen = fromIntegral <$> getWord32le >>= \ len ->
-    getLazyByteString len >>= \ str -> case runGetAll messageGetM str of
-        (Finished _ _ msg) -> return (len, msg)
-        (Failed _ e) -> fail e
-        _ -> fail "sub runGetAll returned 'Partial'"
-
 -- | Create a 'GetBlob' that deserializes a single message of type 'msg'. This
 --   works by nesting the 'Get' monad. Failures in the inner monad are
 --   propagated to the outer level with 'fail'.
 lenMessageGetM :: (ReflectDescriptor msg, Wire msg) => GetBlob msg
-lenMessageGetM = snd <$> lenMessageGetMLen
+lenMessageGetM = getWord32le >>=
+    (getLazyByteString . fromIntegral) >>=
+    (checkResult . runGetAll messageGetM)
+    where checkResult (Finished _ _ x) = return x
+          checkResult (Failed _ e)     = fail e
+          checkResult _                = fail "sub runGetAll returned 'Partial'"
 
 runGetBlob :: GetBlob a -> BL.ByteString -> Either String a
 runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
@@ -127,16 +123,16 @@ runGetBlob g l = case runGetOnLazy g l of (Left e)       -> Left e
 --   a type constraint on the Foldable instance of ProtoBlob.
 --   Look at protoBlob and messages for examples of how the hell to use 
 --   ProtoBlob.
-data ProtoBlob msg a = ProtoBlob ((Int64, msg) -> a) BL.ByteString
+data ProtoBlob msg a = ProtoBlob (msg -> a) BL.ByteString
 
 -- | toList . protoBlob will effectively give you a lazy list of the entire
 --   parsed contents of the input bytestring.
-protoBlob :: BL.ByteString -> ProtoBlob msg (Int64, msg)
+protoBlob :: BL.ByteString -> ProtoBlob msg msg
 protoBlob = ProtoBlob id
 
 -- | This is for when you don't care about length information.
-messages :: BL.ByteString -> ProtoBlob msg msg
-messages = ProtoBlob snd
+--messages :: BL.ByteString -> ProtoBlob msg msg
+--messages = ProtoBlob snd
 
 -- | Having that (entirely silly) first argument to ProtoBlob data constructor
 --   has the one benefit of making it trivially easy to write a lazy Functor
@@ -151,4 +147,4 @@ instance (ReflectDescriptor msg, Wire msg) => Foldable (ProtoBlob msg) where
     then base
     else either error (\ (parseResult, remainder)
         -> toAcc (toa parseResult) $ foldr toAcc base (ProtoBlob toa remainder)
-      ) $ runGetOnLazy lenMessageGetMLen bStr
+      ) $ runGetOnLazy lenMessageGetM bStr
